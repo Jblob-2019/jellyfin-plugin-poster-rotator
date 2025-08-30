@@ -57,15 +57,35 @@ namespace Jellyfin.Plugin.PosterRotator
                 _log.LogInformation("PosterRotator: library filtering by name is not applied in this build; processing all movies.");
             }
 
+            // Build a quick map: directory -> number of movies in that directory.
+            // Used to detect "mixed" folders (many movies in one folder).
+            var dirCounts = movies
+                .Select(m => Path.GetDirectoryName(m.Path ?? string.Empty) ?? string.Empty)
+                .GroupBy(d => d, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+
             var total = movies.Count;
             var done = 0;
+
+            // Gather library roots once; nudge each only if anything in that root rotated.
+            var libraryRoots = GetLibraryRootPaths();
+            var rootsToNudge = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var movie in movies)
             {
                 ct.ThrowIfCancellationRequested();
                 try
                 {
-                    await ProcessMovieAsync(movie, cfg, ct).ConfigureAwait(false);
+                    var rotated = await ProcessMovieAsync(movie, cfg, ct, dirCounts).ConfigureAwait(false);
+                    if (rotated)
+                    {
+                        var path = movie.Path ?? string.Empty;
+                        var root = libraryRoots.FirstOrDefault(r => path.StartsWith(r, StringComparison.OrdinalIgnoreCase));
+                        if (!string.IsNullOrEmpty(root))
+                        {
+                            rootsToNudge.Add(root);
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -74,222 +94,159 @@ namespace Jellyfin.Plugin.PosterRotator
 
                 progress?.Report(++done * 100.0 / Math.Max(1, total));
             }
+
+            // Nudge each affected root once
+            foreach (var root in rootsToNudge)
+            {
+                NudgeLibraryRoot(root);
+            }
         }
 
-        private async Task ProcessMovieAsync(Movie movie, Configuration cfg, CancellationToken ct)
+        // returns true if we actually overwrote the current poster
+        private async Task<bool> ProcessMovieAsync(Movie movie, Configuration cfg, CancellationToken ct, IDictionary<string,int> dirCounts)
         {
-            var movieDir = ResolveMovieDirectory(movie);
+            var movieDir = GetMovieDir(movie);
             if (string.IsNullOrEmpty(movieDir) || !Directory.Exists(movieDir))
-                return;
+                return false;
 
-            var poolDir = Path.Combine(movieDir, "poster_pool");
+            var mixedFolder = IsMixedFolder(movie, dirCounts);
+
+            // Use a per-movie pool inside a shared ".poster_pool" when in mixed folders.
+            // Keep the original "poster_pool" in one-movie-per-folder setups.
+            var poolDir = mixedFolder
+                ? GetPerMoviePoolDir(movieDir, movie)
+                : Path.Combine(movieDir, "poster_pool");
             Directory.CreateDirectory(poolDir);
 
-            // Read current pool
+            // ---- read existing pool ------------------------------------------------
             var local = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var pat in GetPoolPatterns(cfg))
                 foreach (var f in Directory.GetFiles(poolDir, pat))
                     local.Add(f);
 
-            // ====== FILL (best-effort) ======
             var lockFile = Path.Combine(poolDir, "pool.lock");
             var poolIsLocked = File.Exists(lockFile);
 
-            _log.LogDebug("PosterRotator: \"{Movie}\" pool has {Count}/{Target}. Locked:{Locked}",
-                movie.Name, local.Count, cfg.PoolSize, poolIsLocked);
+            // ---- cooldown state (gates TOP-UP only, not rotation) ------------------
+            var statePath = Path.Combine(poolDir, "rotation_state.json");
+            var state = LoadState(statePath);
+            var key = movie.Id.ToString();
+            var now = DateTimeOffset.UtcNow;
 
-            if (!poolIsLocked && local.Count < cfg.PoolSize)
+            bool haveLast = state.LastRotatedUtcByItem.TryGetValue(key, out var lastEpoch);
+            var elapsed = haveLast ? (now - DateTimeOffset.FromUnixTimeSeconds(lastEpoch)) : TimeSpan.MaxValue;
+            var minHours = Math.Max(1, cfg.MinHoursBetweenSwitches);
+
+            // allow top-up if: never rotated OR past cooldown OR pool is empty
+            bool allowTopUp = !haveLast || elapsed.TotalHours >= minHours || local.Count == 0;
+
+            _log.LogDebug("PosterRotator: \"{Movie}\" pool has {Count}/{Target}. Locked:{Locked}. AllowTopUp:{Allow} (elapsed {H:0.0}h, min {Min}h)",
+                movie.Name, local.Count, cfg.PoolSize, poolIsLocked, allowTopUp, haveLast ? elapsed.TotalHours : -1, minHours);
+
+            // ---- TOP-UP only if allowed by cooldown --------------------------------
+            if (!poolIsLocked && local.Count < cfg.PoolSize && allowTopUp)
             {
-                var needed = cfg.PoolSize - local.Count;
-                _log.LogDebug("PosterRotator: attempting top-up of {Needed} for \"{Movie}\"", needed, movie.Name);
+                var need = cfg.PoolSize - local.Count;
+                _log.LogDebug("PosterRotator: attempting top-up of {Need} for \"{Movie}\"", need, movie.Name);
 
-                if (needed > 0)
+                var added = await TryTopUpFromProvidersDIAsync(movie, poolDir, need, cfg, ct).ConfigureAwait(false);
+                if (added.Count < need)
                 {
-                    var added = await TryTopUpFromProvidersDIAsync(movie, poolDir, needed, cfg, ct).ConfigureAwait(false);
-                    if (added.Count < needed)
-                    {
-                        var more = await TryTopUpFromProvidersReflectionAsync(movie, poolDir, needed - added.Count, cfg, ct).ConfigureAwait(false);
-                        added.AddRange(more);
-                    }
-                    foreach (var f in added) local.Add(f);
+                    var more = await TryTopUpFromProvidersReflectionAsync(movie, poolDir, need - added.Count, cfg, ct).ConfigureAwait(false);
+                    added.AddRange(more);
+                }
+
+                foreach (var f in added) local.Add(f);
+
+                // If user wants to lock after fill, create the lock file when target reached.
+                if (!poolIsLocked && cfg.LockImagesAfterFill && local.Count >= cfg.PoolSize)
+                {
+                    try { File.WriteAllText(lockFile, "locked"); } catch { }
+                    poolIsLocked = true;
+                    _log.LogInformation("PosterRotator: locked pool for \"{Movie}\" at size {Size}.", movie.Name, local.Count);
                 }
             }
+            else if (!poolIsLocked && local.Count < cfg.PoolSize && !allowTopUp)
+            {
+                _log.LogDebug("PosterRotator: skipping top-up for \"{Movie}\" due to cooldown (elapsed {H:0.0}h < {Min}h); will still rotate.", movie.Name, elapsed.TotalHours, minHours);
+            }
+            else if (poolIsLocked && !cfg.LockImagesAfterFill)
+            {
+                // Unlock if config changed.
+                try { File.Delete(lockFile); } catch { }
+                poolIsLocked = false;
+                _log.LogInformation("PosterRotator: unlocked pool for \"{Movie}\" (config changed).", movie.Name);
+            }
 
-            // Bootstrap: snapshot the current Primary once
+            // ---- bootstrap pool from current primary (or existing per-movie poster) if still empty ----
             if (local.Count == 0)
             {
-                var primaryPath = TryCopyCurrentPrimaryToPool(movie, poolDir);
+                var primaryPath = TryCopyCurrentPrimaryToPool(movie, poolDir, mixedFolder);
                 if (primaryPath != null) local.Add(primaryPath);
             }
 
             if (local.Count == 0)
             {
-                _log.LogDebug("PosterRotator: no candidates for {Name}", movie.Name);
-                return;
+                _log.LogDebug("PosterRotator: no candidates available for {Name}; nothing to rotate.", movie.Name);
+                return false;
             }
 
-            // ====== COOLDOWN ======
-            var statePath = Path.Combine(poolDir, "rotation_state.json"); // keep state in the pool folder
-            var state = LoadState(statePath);
-            var key = movie.Id.ToString();
-            var now = DateTimeOffset.UtcNow;
-
-            if (state.LastRotatedUtcByItem.TryGetValue(key, out var lastEpoch))
-            {
-                var elapsed = now - DateTimeOffset.FromUnixTimeSeconds(lastEpoch);
-                var minHours = Math.Max(1, cfg.MinHoursBetweenSwitches);
-                if (elapsed.TotalHours < minHours)
-                {
-                    _log.LogDebug("PosterRotator: skipping \"{Name}\" — only {H:0.0}h elapsed (< {Min}h).",
-                        movie.Name, elapsed.TotalHours, minHours);
-                    return;
-                }
-            }
-
-            // ====== ROTATE ======
+            // ---- ROTATE -------------------------------------------------------------
             var files = local.ToList();
-            var chosen = PickNextFor(files, movie, cfg, poolDir);
+            var chosen = PickNextFor(files, movie, cfg, poolDir, state);
 
-            if (!cfg.DryRun)
+            // Determine destination path:
+            //  - If Jellyfin returns a primary path, prefer that (unique per item).
+            //  - Else: in mixed folders, write a per-movie poster filename (avoid shared poster.jpg).
+            //          in single-movie folders, keep the original poster.jpg fallback.
+            bool rotated = false;
+            var currentPrimary = movie.GetImagePath(ImageType.Primary);
+
+            string? destinationPath = null;
+            var chosenExt = Path.GetExtension(chosen);
+            if (string.IsNullOrEmpty(chosenExt)) chosenExt = ".jpg";
+
+            if (!string.IsNullOrEmpty(currentPrimary))
             {
-                var currentPrimary = movie.GetImagePath(ImageType.Primary);
-                string? destPath = null;
-
-                if (!string.IsNullOrEmpty(currentPrimary))
+                destinationPath = currentPrimary;
+            }
+            else
+            {
+                if (mixedFolder)
                 {
-                    var dir = Path.GetDirectoryName(currentPrimary);
-                    if (!string.IsNullOrEmpty(dir))
-                        Directory.CreateDirectory(dir);
-
-                    File.Copy(chosen, currentPrimary!, overwrite: true);
-                    destPath = currentPrimary!;
+                    destinationPath = GetPreferredPerMoviePosterPath(movie, movieDir, chosenExt);
                 }
                 else
                 {
-                    var fallback = Path.Combine(movieDir, "poster.jpg");
-                    File.Copy(chosen, fallback, overwrite: true);
-                    destPath = fallback;
-                }
-
-                // Touch destination to bump mtime (helps cache busting)
-                try
-                {
-                    if (destPath != null)
-                    {
-                        File.SetLastWriteTimeUtc(destPath, DateTime.UtcNow);
-                        File.SetCreationTimeUtc(destPath, DateTime.UtcNow);
-                    }
-                }
-                catch { /* best-effort */ }
-
-                // Best-effort nudges so clients refresh
-                try
-                {
-                    // 1) bump DateModified
-                    typeof(BaseItem).GetProperty("DateModified", BindingFlags.Public | BindingFlags.Instance)
-                        ?.SetValue(movie, DateTime.UtcNow);
-
-                    // 2) Try UpdateItem*(...) on ILibraryManager
-                    var lmType = _library.GetType();
-                    var update = lmType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                        .FirstOrDefault(m =>
-                        {
-                            var ps = m.GetParameters();
-                            return ps.Length >= 1 &&
-                                   typeof(BaseItem).IsAssignableFrom(ps[0].ParameterType) &&
-                                   m.Name.Contains("UpdateItem", StringComparison.OrdinalIgnoreCase);
-                        });
-                    if (update != null)
-                    {
-                        var ps = update.GetParameters();
-                        var args = new object?[ps.Length];
-                        args[0] = movie;
-                        for (int i = 1; i < ps.Length; i++)
-                            args[i] = ps[i].HasDefaultValue ? ps[i].DefaultValue : null;
-
-                        if (typeof(Task).IsAssignableFrom(update.ReturnType))
-                        {
-                            var t = (Task)update.Invoke(_library, args)!;
-                            t.GetAwaiter().GetResult();
-                        }
-                        else
-                        {
-                            _ = update.Invoke(_library, args);
-                        }
-                    }
-                    else
-                    {
-                        // 3) Fallback: try RefreshItem*(BaseItem, MetadataRefreshOptions?, CancellationToken?)
-                        var refresh = lmType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-                            .FirstOrDefault(m => m.Name.Contains("RefreshItem", StringComparison.OrdinalIgnoreCase));
-                        if (refresh != null)
-                        {
-                            var rps = refresh.GetParameters();
-                            var rargs = new object?[rps.Length];
-                            for (int i = 0; i < rps.Length; i++)
-                            {
-                                var p = rps[i];
-                                if (i == 0 && typeof(BaseItem).IsAssignableFrom(p.ParameterType))
-                                {
-                                    rargs[i] = movie;
-                                }
-                                else if (p.ParameterType.Name.Contains("MetadataRefreshOptions", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    var mro = CreateDefaultRefreshOptions(p.ParameterType);
-                                    rargs[i] = mro;
-                                }
-                                else if (p.ParameterType == typeof(CancellationToken))
-                                {
-                                    rargs[i] = CancellationToken.None;
-                                }
-                                else
-                                {
-                                    rargs[i] = p.HasDefaultValue ? p.DefaultValue : null;
-                                }
-                            }
-
-                            if (typeof(Task).IsAssignableFrom(refresh.ReturnType))
-                            {
-                                var t = (Task)refresh.Invoke(_library, rargs)!;
-                                t.GetAwaiter().GetResult();
-                            }
-                            else
-                            {
-                                _ = refresh.Invoke(_library, rargs);
-                            }
-                        }
-                    }
-
-                    _log.LogInformation("PosterRotator: applied new primary for \"{Name}\": {Chosen} → {Dest}",
-                        movie.Name, Path.GetFileName(chosen), destPath);
-                }
-                catch (Exception bumpEx)
-                {
-                    _log.LogDebug(bumpEx, "PosterRotator: refresh/tag bump best-effort failed for \"{Name}\"", movie.Name);
+                    destinationPath = Path.Combine(movieDir, "poster.jpg");
                 }
             }
 
-            // Record last-rotated time
+            if (!string.IsNullOrEmpty(destinationPath))
+            {
+                var dir = Path.GetDirectoryName(destinationPath);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+                SafeOverwrite(chosen, destinationPath);
+                rotated = true;
+
+                _log.LogInformation("PosterRotator: rotated \"{Movie}\" to {Poster} ({Dest})",
+                    movie.Name, Path.GetFileName(chosen), Path.GetFileName(destinationPath));
+            }
+
+            // record last-rotated time
             state.LastRotatedUtcByItem[key] = now.ToUnixTimeSeconds();
             SaveState(statePath, state);
 
-            // ====== LOCK AFTER FILL ======
-            if (cfg.LockImagesAfterFill && files.Count >= cfg.PoolSize && !cfg.DryRun)
-            {
-                if (!File.Exists(lockFile))
-                {
-                    File.WriteAllText(lockFile, "locked");
-                }
-            }
+            return rotated;
         }
 
-        // Build a minimal MetadataRefreshOptions using reflection
+        // Build a minimal MetadataRefreshOptions using reflection (kept if you ever want to refresh metadata)
         private static object? CreateDefaultRefreshOptions(Type mroType)
         {
             try
             {
                 var mro = Activator.CreateInstance(mroType);
-                // Be conservative: prefer local changes, avoid re-downloading
                 mroType.GetProperty("ReplaceAllImages")?.SetValue(mro, false);
                 mroType.GetProperty("ImageRefreshMode")?.SetValue(mro, Enum.Parse(mroType.GetProperty("ImageRefreshMode")!.PropertyType, "FullRefresh", ignoreCase: true));
                 mroType.GetProperty("MetadataRefreshMode")?.SetValue(mro, Enum.Parse(mroType.GetProperty("MetadataRefreshMode")!.PropertyType, "None", ignoreCase: true));
@@ -425,7 +382,7 @@ namespace Jellyfin.Plugin.PosterRotator
                 // then others
                 if (added.Count < needed)
                 {
-                    foreach (var info in ordered.Where(i => i.Type == ImageType.Thumb || i.Type == ImageType.Backdrop))
+                    foreach (var info in ordered.Where(i => i.Type == ImageType.Thumb || i == null || i.Type == ImageType.Backdrop))
                     {
                         if (added.Count >= needed) break;
                         await TryDownloadRemote(info, movie, poolDir, cfg, ct, added).ConfigureAwait(false);
@@ -450,14 +407,12 @@ namespace Jellyfin.Plugin.PosterRotator
 
                 try
                 {
-                    if (!c.DryRun)
-                    {
-                        using var resp = await _http.GetAsync(url, token).ConfigureAwait(false);
-                        resp.EnsureSuccessStatusCode();
-                        await using var s = await resp.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
-                        await using var f = File.Create(full);
-                        await s.CopyToAsync(f, token).ConfigureAwait(false);
-                    }
+                    using var resp = await _http.GetAsync(url, token).ConfigureAwait(false);
+                    resp.EnsureSuccessStatusCode();
+                    await using var s = await resp.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
+                    await using var f = File.Create(full);
+                    await s.CopyToAsync(f, token).ConfigureAwait(false);
+
                     bucket.Add(full);
                 }
                 catch (Exception ex)
@@ -738,14 +693,12 @@ namespace Jellyfin.Plugin.PosterRotator
 
                     try
                     {
-                        if (!cfg2.DryRun)
-                        {
-                            using var resp = await _http.GetAsync(url, ct2).ConfigureAwait(false);
-                            resp.EnsureSuccessStatusCode();
-                            await using var s = await resp.Content.ReadAsStreamAsync(ct2).ConfigureAwait(false);
-                            await using var f = File.Create(full);
-                            await s.CopyToAsync(f, ct2).ConfigureAwait(false);
-                        }
+                        using var resp = await _http.GetAsync(url, ct2).ConfigureAwait(false);
+                        resp.EnsureSuccessStatusCode();
+                        await using var s = await resp.Content.ReadAsStreamAsync(ct2).ConfigureAwait(false);
+                        await using var f = File.Create(full);
+                        await s.CopyToAsync(f, ct2).ConfigureAwait(false);
+
                         added2.Add(full);
                         count++;
                     }
@@ -777,6 +730,46 @@ namespace Jellyfin.Plugin.PosterRotator
             }
         }
 
+        // New helpers for mixed-folder handling
+
+        private static string GetMovieDir(Movie movie) => ResolveMovieDirectory(movie);
+
+        private static bool IsMixedFolder(Movie movie, IDictionary<string,int> dirCounts)
+        {
+            var dir = Path.GetDirectoryName(movie.Path ?? string.Empty) ?? string.Empty;
+            return !string.IsNullOrEmpty(dir)
+                && dirCounts.TryGetValue(dir, out var n)
+                && n > 1;
+        }
+
+        private static string GetPerMoviePoolDir(string movieDir, Movie movie)
+        {
+            var root = Path.Combine(movieDir, ".poster_pool");
+            Directory.CreateDirectory(root);
+            return Path.Combine(root, movie.Id.ToString("N"));
+        }
+
+        private static string GetPreferredPerMoviePosterPath(Movie movie, string movieDir, string preferredExt)
+        {
+            var src = movie.Path ?? "poster";
+            var baseName = Path.GetFileNameWithoutExtension(src) ?? "poster";
+            var ext = string.IsNullOrWhiteSpace(preferredExt) ? ".jpg" : preferredExt.ToLowerInvariant();
+
+            // Prefer existing per-movie poster if present (any ext), else choose a good conventional name.
+            foreach (var stem in new[] { $"{baseName}-poster", baseName })
+            {
+                var existing = Directory.GetFiles(movieDir, stem + ".*")
+                    .FirstOrDefault(f =>
+                        f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                        f.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
+                        f.EndsWith(".webp", StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrEmpty(existing))
+                    return existing;
+            }
+
+            return Path.Combine(movieDir, $"{baseName}-poster{ext}");
+        }
+
         private static IEnumerable<string> GetPoolPatterns(Configuration cfg)
         {
             var patterns = new List<string>();
@@ -785,15 +778,15 @@ namespace Jellyfin.Plugin.PosterRotator
 
             patterns.AddRange(new[]
             {
-                "*.jpg","*.jpeg","*.png","*.webp",
-                "poster*.jpg","poster*.jpeg","poster*.png","poster*.webp",
-                "*-poster*.jpg","*-poster*.jpeg","*-poster*.png","*-poster*.webp"
+                "*.jpg","*.jpeg","*.png","*.webp","*.gif",
+                "poster*.jpg","poster*.jpeg","poster*.png","poster*.webp","poster*.gif",
+                "*-poster*.jpg","*-poster*.jpeg","*-poster*.png","*-poster*.webp","*-poster*.gif" 
             });
 
             return patterns.Distinct(StringComparer.OrdinalIgnoreCase);
         }
 
-        private static string? TryCopyCurrentPrimaryToPool(Movie movie, string poolDir)
+        private static string? TryCopyCurrentPrimaryToPool(Movie movie, string poolDir, bool mixedFolder = false)
         {
             try
             {
@@ -805,6 +798,29 @@ namespace Jellyfin.Plugin.PosterRotator
                     File.Copy(primary, dest, overwrite: true);
                     return dest;
                 }
+
+                // In mixed folders, also look for an existing per-movie poster beside the file.
+                if (mixedFolder && !string.IsNullOrEmpty(movie.Path))
+                {
+                    var dir = Path.GetDirectoryName(movie.Path)!;
+                    var baseName = Path.GetFileNameWithoutExtension(movie.Path)!;
+
+                    var candidates = Directory.GetFiles(dir, $"{baseName}-poster.*")
+                        .Concat(Directory.GetFiles(dir, $"{baseName}.*"))
+                        .Where(f => f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase)
+                                 || f.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+                                 || f.EndsWith(".webp", StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                    var existing = candidates.FirstOrDefault();
+                    if (!string.IsNullOrEmpty(existing))
+                    {
+                        var name = "pool_currentprimary" + Path.GetExtension(existing);
+                        var dest = Path.Combine(poolDir, name);
+                        File.Copy(existing, dest, overwrite: true);
+                        return dest;
+                    }
+                }
             }
             catch { /* ignore */ }
 
@@ -812,13 +828,17 @@ namespace Jellyfin.Plugin.PosterRotator
         }
 
         // Skip pool_currentprimary.* when alternatives exist; on first rotation start at a non-current image
-        private static string PickNextFor(List<string> files, Movie movie, Configuration cfg, string poolDir)
+        private static string PickNextFor(
+            List<string> files,
+            Movie movie,
+            Configuration cfg,
+            string poolDir,
+            RotationState state)
         {
-            var statePath = Path.Combine(poolDir, "rotation_state.json");
-            var state = LoadState(statePath);
-
+            // deterministic order: push pool_currentprimary.* to the end, then sort by filename
             var reordered = files
                 .OrderBy(f => Path.GetFileName(f).StartsWith("pool_currentprimary", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+                .ThenBy(f => Path.GetFileName(f), StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
             var key = movie.Id.ToString();
@@ -826,23 +846,26 @@ namespace Jellyfin.Plugin.PosterRotator
 
             if (cfg.SequentialRotation)
             {
+                // First time: if we have >1 image, skip the snapshot
                 if (!state.LastIndexByItem.ContainsKey(key) && reordered.Count > 1)
                 {
-                    idx = 1;                          // skip the snapshot first time
-                    state.LastIndexByItem[key] = 2;   // next = 2
+                    idx = 1;                        // use first non-snapshot
+                    state.LastIndexByItem[key] = 2; // next time continue with index 2
                 }
                 else
                 {
                     var last = state.LastIndexByItem.TryGetValue(key, out var v) ? v : 0;
                     idx = last % reordered.Count;
-                    state.LastIndexByItem[key] = last + 1;
+                    state.LastIndexByItem[key] = last + 1; // advance for next run
                 }
             }
             else
             {
+                // Random: prefer non-snapshot when possible
                 if (reordered.Count > 1)
                 {
-                    var nonCurrent = reordered.Where(f => !Path.GetFileName(f).StartsWith("pool_currentprimary", StringComparison.OrdinalIgnoreCase)).ToList();
+                    var nonCurrent = reordered.Where(f =>
+                        !Path.GetFileName(f).StartsWith("pool_currentprimary", StringComparison.OrdinalIgnoreCase)).ToList();
                     if (nonCurrent.Count > 0)
                     {
                         var pick = nonCurrent[Random.Shared.Next(nonCurrent.Count)];
@@ -857,10 +880,30 @@ namespace Jellyfin.Plugin.PosterRotator
                 {
                     idx = 0;
                 }
+
+                // (We don’t touch LastIndexByItem for random mode.)
             }
 
-            SaveState(statePath, state);
             return reordered[idx];
+        }
+
+        private static void SafeOverwrite(string src, string dst)
+        {
+            try
+            {
+                if (File.Exists(dst))
+                {
+                    var attrs = File.GetAttributes(dst);
+                    if ((attrs & FileAttributes.ReadOnly) != 0)
+                        File.SetAttributes(dst, attrs & ~FileAttributes.ReadOnly);
+                }
+                File.Copy(src, dst, overwrite: true);
+                try { File.SetLastWriteTimeUtc(dst, DateTime.UtcNow); } catch { }
+            }
+            catch
+            {
+                // Swallow; caller logs the intent already.
+            }
         }
 
         private sealed class RotationState
@@ -900,6 +943,7 @@ namespace Jellyfin.Plugin.PosterRotator
                 "image/png" => ".png",
                 "image/webp" => ".webp",
                 "image/jpeg" => ".jpg",
+                "image/gif"  => ".gif",  
                 _ => null
             };
 
@@ -913,6 +957,69 @@ namespace Jellyfin.Plugin.PosterRotator
                 return ext.StartsWith('.') ? ext.ToLowerInvariant() : "." + ext.ToLowerInvariant();
             }
             catch { return null; }
+        }
+
+        // ---- library root helpers (nudge once per root) ----------------------
+
+        private List<string> GetLibraryRootPaths()
+        {
+            try
+            {
+                var roots = new List<string>();
+
+                // Reflect GetVirtualFolders() to read Locations/Paths
+                var lmType = _library.GetType();
+                var getVf = lmType.GetMethod("GetVirtualFolders");
+                if (getVf != null)
+                {
+                    var vfResult = getVf.Invoke(_library, null) as System.Collections.IEnumerable;
+                    if (vfResult != null)
+                    {
+                        foreach (var vf in vfResult)
+                        {
+                            var locProp = vf.GetType().GetProperty("Locations") ?? vf.GetType().GetProperty("Paths");
+                            var locVal = locProp?.GetValue(vf) as System.Collections.IEnumerable;
+                            if (locVal != null)
+                            {
+                                foreach (var p in locVal)
+                                {
+                                    if (p is string s && !string.IsNullOrWhiteSpace(s))
+                                        roots.Add(s);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return roots.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            }
+            catch
+            {
+                return new List<string>();
+            }
+        }
+
+        private void NudgeLibraryRoot(string rootPath)
+        {
+            // Best-effort: touch a persistent file in the root so file watchers notice one change per run.
+            try
+            {
+                _log.LogDebug("PosterRotator: nudging library root {Root}", rootPath);
+
+                var touch = Path.Combine(rootPath, ".posterrotator.touch");
+                if (!File.Exists(touch))
+                {
+                    File.WriteAllText(touch, "posterrotator");
+                }
+                else
+                {
+                    File.SetLastWriteTimeUtc(touch, DateTime.UtcNow);
+                }
+            }
+            catch
+            {
+                // ignore; this is just a cache-bust hint
+            }
         }
     }
 }
