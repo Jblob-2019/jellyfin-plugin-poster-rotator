@@ -9,10 +9,10 @@
     "imageUrl": "https://raw.githubusercontent.com/jonah-jamesen/jellyfin-plugin-poster-rotator/main/jellyfin-plugin-posterrotator.png",
     "versions": [
       {
-        "version": "1.0.1.1",
+        "version": "1.0.1.2",
         "targetAbi": "10.10.0.0",
-        "sourceUrl": "https://github.com/jonah-jamesen/jellyfin-plugin-poster-rotator/releases/download/v1.0.1.1/Jellyfin.Plugin.PosterRotator-1.0.1.1.zip",
-        "checksum": "750a92da44e52e84f6c6d7cfe00ac5cf",
+        "sourceUrl": "https://github.com/jonah-jamesen/jellyfin-plugin-poster-rotator/releases/download/v1.0.1.2/Jellyfin.Plugin.PosterRotator-1.0.1.2.zip",
+        "checksum": "d9325d02ff7fe69a688703d9c03ae3ba",
         "timestamp": "2025-08-17T14:30:00Z",
         "changelog": "Fix handling for users who store multiple movies in the same folder. Added optional .gif support."
       }
