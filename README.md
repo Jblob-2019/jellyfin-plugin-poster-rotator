@@ -8,11 +8,13 @@ Video Walkthrough: https://youtu.be/w-x6aaElwVk
 
 ## Features
 
-- Builds a per-movie `poster_pool` folder next to the media file or movie folder  
-- Downloads posters from providers like TMDb and Fanart when available  
-- Saves a snapshot of the current primary poster as `pool_currentprimary.*`  
-- Option to lock the pool after it reaches the target size  
-- Sequential or random rotation with a configurable cooldown  
+-Works with both Movies and TV Shows (toggleable in settings)
+-Per-library enable/disable control (choose which libraries participate)
+-Builds a per-item poster_pool folder for each movie or show
+-Downloads posters from providers like TMDb and Fanart when available
+-Saves a snapshot of the current primary poster as pool_currentprimary.*
+-Sequential or random rotation with a configurable cooldown
+-Supports extra poster patterns (e.g. cover.jpg, *-alt.png)
 
 ---
 
