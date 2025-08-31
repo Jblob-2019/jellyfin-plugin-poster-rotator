@@ -2,6 +2,8 @@
 
 Rotate movie posters in Jellyfin by building a small local pool of images next to each movie. The plugin fills the pool from your enabled metadata image providers, then cycles through those posters on a schedule without redownloading every time.
 
+Video Walkthrough: https://youtu.be/w-x6aaElwVk
+
 ---
 
 ## Features
