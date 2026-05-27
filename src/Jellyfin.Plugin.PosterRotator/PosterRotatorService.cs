@@ -50,7 +50,7 @@ namespace Jellyfin.Plugin.PosterRotator
                 Recursive = true
             };
 
-            var movies = _library.GetItemList(q).OfType<Movie>().ToList();
+            var movies = (await _library.GetItemsAsync(q).ConfigureAwait(false)).OfType<Movie>().ToList();
 
             if (cfg.Libraries is { Count: > 0 })
             {
