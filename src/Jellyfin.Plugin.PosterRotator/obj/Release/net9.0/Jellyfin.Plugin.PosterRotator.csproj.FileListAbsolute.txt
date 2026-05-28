@@ -4,3 +4,10 @@ C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-
 C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\obj\Release\net9.0\Jellyfin.Plugin.PosterRotator.AssemblyInfo.cs
 C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\obj\Release\net9.0\Jellyfin.Plugin.PosterRotator.csproj.CoreCompileInputs.cache
 C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\obj\Release\net9.0\Jellyfin.Plugin.PosterRotator.sourcelink.json
+C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\bin\Release\net9.0\Jellyfin.Plugin.PosterRotator.deps.json
+C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\bin\Release\net9.0\Jellyfin.Plugin.PosterRotator.dll
+C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\bin\Release\net9.0\Jellyfin.Plugin.PosterRotator.pdb
+C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\obj\Release\net9.0\Jellyfin.Plugin.PosterRotator.dll
+C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\obj\Release\net9.0\refint\Jellyfin.Plugin.PosterRotator.dll
+C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\obj\Release\net9.0\Jellyfin.Plugin.PosterRotator.pdb
+C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\obj\Release\net9.0\ref\Jellyfin.Plugin.PosterRotator.dll

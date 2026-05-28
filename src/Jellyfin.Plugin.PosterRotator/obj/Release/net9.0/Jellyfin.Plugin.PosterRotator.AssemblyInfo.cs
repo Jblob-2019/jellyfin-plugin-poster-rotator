@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Jellyfin.Plugin.PosterRotator")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.1.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.1.0+c49e38ac979312c135d71a46540171c5bfa22243")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.1.0+a48361f5e33ba617827af85e1c9d5fea9b136588")]
 [assembly: System.Reflection.AssemblyProductAttribute("Jellyfin.Plugin.PosterRotator")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Jellyfin.Plugin.PosterRotator")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.1.0")]

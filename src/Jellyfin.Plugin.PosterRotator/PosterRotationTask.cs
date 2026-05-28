@@ -59,7 +59,7 @@ namespace Jellyfin.Plugin.PosterRotator
         {
             return new[]
             {
-                new TaskTriggerInfo { Type = TaskTriggerInfoType.One, TimeOfDayTicks = TimeSpan.FromHours(3).Ticks }
+                new TaskTriggerInfo { Type = TaskTriggerInfoType.DailyTrigger, TimeOfDayTicks = TimeSpan.FromHours(3).Ticks }
             };
         }
     }
