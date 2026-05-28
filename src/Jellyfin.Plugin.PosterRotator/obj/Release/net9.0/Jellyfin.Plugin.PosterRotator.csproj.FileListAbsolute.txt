@@ -1,0 +1,6 @@
+C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\obj\Release\net9.0\Jellyfin.Plugin.PosterRotator.csproj.AssemblyReference.cache
+C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\obj\Release\net9.0\Jellyfin.Plugin.PosterRotator.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\obj\Release\net9.0\Jellyfin.Plugin.PosterRotator.AssemblyInfoInputs.cache
+C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\obj\Release\net9.0\Jellyfin.Plugin.PosterRotator.AssemblyInfo.cs
+C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\obj\Release\net9.0\Jellyfin.Plugin.PosterRotator.csproj.CoreCompileInputs.cache
+C:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator\obj\Release\net9.0\Jellyfin.Plugin.PosterRotator.sourcelink.json

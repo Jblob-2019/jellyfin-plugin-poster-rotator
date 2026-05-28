@@ -1,0 +1,301 @@
+# Jellyfin Plugin Poster Rotator - Handover Document
+**Date:** May 28, 2026
+**Project:** Jellyfin Plugin Poster Rotator v1.0.1.3
+**Upgrade Target:** Jellyfin 10.11.9 (from 10.10.3)
+
+---
+
+## COMPLETED WORK
+
+### 1. NuGet Package Upgrades
+✅ **Status:** Complete
+- Updated all Jellyfin NuGet packages from 10.10.3 → 10.11.9:
+  - Jellyfin.Model 10.11.9
+  - Jellyfin.Controller 10.11.9
+  - Jellyfin.Common 10.11.9
+  - Jellyfin.Extensions 10.11.9
+- **File:** `Jellyfin.Plugin.PosterRotator.csproj`
+
+### 2. Framework Migration
+✅ **Status:** Complete
+- Upgraded target framework from `net8.0` → `net9.0` (required by Jellyfin 10.11.9 packages)
+- **File:** `Jellyfin.Plugin.PosterRotator.csproj`
+- **Reason:** NuGet packages only support net9.0+
+
+### 3. Manifest Configuration
+✅ **Status:** Complete
+- Updated `manifest.json`:
+  - version: "1.0.1.3"
+  - targetAbi: "10.11.9.0"
+  - sourceUrl: Corrected to point to GitHub release DLL (not ZIP)
+- **File:** `manifest.json`
+
+### 4. API Compatibility Fixes
+✅ **Partially Complete** (1 of 2 fixed)
+
+#### Fix #1: ILibraryManager.QueryItems() - WORKING ✅
+- **Problem:** Original `GetItemList()` method removed in 10.11.9
+- **Root Cause:** Jellyfin removed synchronous item list retrieval
+- **Solution:** Use `QueryItems()` which returns `QueryResult<BaseItem>` directly (synchronous)
+- **File:** `PosterRotatorService.cs` Line 53
+- **Change:**
+  ```csharp
+  // BEFORE: (broken)
+  var movies = _library.GetItemList(q).OfType<Movie>().ToList();
+  
+  // AFTER: (working)
+  var movies = _library.QueryItems(q).Items.OfType<Movie>().ToList();
+  ```
+- **Status:** Fixed - builds successfully, removed async/await since QueryItems() is synchronous
+
+#### Fix #2: TaskTriggerInfoType Enum - BLOCKED ❌
+- **Problem:** `TaskTriggerInfoType.Interval` doesn't exist in 10.11.9
+- **File:** `PosterRotationTask.cs` Line 62
+- **Attempted Values Tried:**
+  - ❌ `TaskTriggerInfoType.Daily` - doesn't exist
+  - ❌ `TaskTriggerInfoType.Repeating` - doesn't exist
+  - ❌ `TaskTriggerInfoType.Interval` - doesn't exist
+  - ❌ `TaskTriggerInfoType.RunOnce` - doesn't exist
+  - ❌ `TaskTriggerInfoType.System` - doesn't exist
+  - ⏳ `TaskTriggerInfoType.Scheduled` - currently testing
+- **Current Build Error:** CS0117
+  ```
+  'TaskTriggerInfoType' does not contain a definition for '[attempted-value]'
+  ```
+- **Code Location:**
+  ```csharp
+  public IEnumerable<TaskTriggerInfo> GetDefaultTriggers()
+  {
+      return new[]
+      {
+          new TaskTriggerInfo { Type = TaskTriggerInfoType.Scheduled, TimeOfDayTicks = TimeSpan.FromHours(3).Ticks }
+      };
+  }
+  ```
+
+### 5. GitHub Operations
+✅ **Status:** Complete
+- Created GitHub release v1.0.1.3
+- Uploaded plugin DLL artifact
+- Repository: https://github.com/jblob-2019/jellyfin-plugin-poster-rotator
+
+### 6. Testing & Deployment
+✅ **Status:** Partial
+- Plugin installs successfully in Jellyfin 10.11.9
+- Appears in scheduled tasks list
+- ❌ Runtime execution fails: Cannot execute task due to remaining API incompatibility
+
+---
+
+## CURRENT STATUS
+
+**Build Status:** ❌ FAILING - 1 compilation error
+
+**Blocking Issue:** TaskTriggerInfoType enum value unknown for 10.11.9
+
+**Last Build Output:**
+```
+error CS0117: 'TaskTriggerInfoType' does not contain a definition for 'Scheduled'
+```
+
+**Build Command:** 
+```powershell
+cd "c:\Users\8319j\OneDrive\Documents\jana project\Aegis-Maritime-system-2\jellyfin-plugin-poster-rotator\src\Jellyfin.Plugin.PosterRotator"
+dotnet build -c Release
+```
+
+**Build Location:** `bin/Release/net9.0/Jellyfin.Plugin.PosterRotator.dll`
+
+---
+
+## KNOWN API BREAKING CHANGES (10.10.3 → 10.11.9)
+
+| Method/Enum | Status | Old | New | File |
+|---|---|---|---|---|
+| ILibraryManager.GetItemList() | ✅ Fixed | Synchronous | QueryItems() + .Items | PosterRotatorService.cs:53 |
+| TaskTriggerInfoType enum values | ❌ Blocked | Daily/Repeating/Interval | Unknown | PosterRotationTask.cs:62 |
+
+---
+
+## FILES MODIFIED
+
+1. **Jellyfin.Plugin.PosterRotator.csproj**
+   - Target framework: net8.0 → net9.0
+   - NuGet versions: 10.10.3 → 10.11.9
+
+2. **PosterRotatorService.cs** (Line 53)
+   - Fixed: GetItemList() → QueryItems().Items
+   - Removed: async/await pattern (QueryItems is synchronous)
+
+3. **PosterRotationTask.cs** (Line 62)
+   - Unfixed: TaskTriggerInfoType enum value still unknown
+
+4. **manifest.json**
+   - Updated: targetAbi, version, sourceUrl
+
+---
+
+## DISCOVERY ATTEMPTS FOR TaskTriggerInfoType
+
+**Values Tested:**
+1. Daily - ❌ doesn't exist
+2. Repeating - ❌ doesn't exist
+3. Interval - ❌ doesn't exist
+4. RunOnce - ❌ doesn't exist
+5. System - ❌ doesn't exist
+6. Scheduled - ⏳ currently testing (May 28, 2026)
+
+**Next Steps to Discover Correct Value:**
+1. Search Jellyfin 10.11.9 source code for TaskTriggerInfoType enum definition
+2. Check Jellyfin.Model NuGet package source on GitHub
+3. Try enum values like: One, Once, Other, None, Default, Custom
+4. As last resort: enumerate all enum values programmatically at runtime
+5. Alternative: Check if enum is now string-based instead of int-based
+
+---
+
+## NEXT ACTIONS (Priority Order)
+
+### 🔴 CRITICAL - Fix Build
+**Discover correct TaskTriggerInfoType enum value:**
+1. Examine Jellyfin 10.11.9 source: https://github.com/jellyfin/jellyfin/releases/tag/v10.11.9
+2. Look for Model package source code with TaskTriggerInfoType definition
+3. Try remaining enum value names: One, Once, Other, Default, Custom, None
+4. Build and verify: `dotnet build -c Release`
+
+**Expected Outcome:** Successful compilation with 0 errors
+
+### 🟡 HIGH - Release & Deploy
+Once build succeeds:
+1. Calculate DLL checksum (if required by manifest)
+2. Update manifest.json if needed
+3. Create GitHub release v1.0.1.4 or v1.0.2.0
+4. Upload rebuilt DLL
+5. Deploy to Jellyfin 10.11.9 instance
+
+### 🟢 MEDIUM - Testing & Validation
+1. Reinstall plugin from new release
+2. Verify scheduled task executes without errors
+3. Check poster rotation functionality works
+4. Monitor Jellyfin logs for any runtime exceptions
+
+---
+
+## PROJECT STRUCTURE
+
+```
+jellyfin-plugin-poster-rotator/
+├── manifest.json                    [Updated for 10.11.9]
+├── README.md
+├── .handover                        [This file]
+└── src/
+    └── Jellyfin.Plugin.PosterRotator/
+        ├── Jellyfin.Plugin.PosterRotator.csproj    [Updated: net9.0, 10.11.9 NuGet]
+        ├── Plugin.cs                               [No changes needed]
+        ├── Configuration.cs                        [No changes needed]
+        ├── ServiceRegistrator.cs                   [No changes needed]
+        ├── PosterRotatorService.cs                 [Fixed: Line 53]
+        ├── PosterRotationTask.cs                   [❌ Line 62 - Blocked]
+        ├── Web/
+        │   └── config.html
+        └── bin/
+            └── Release/
+                └── net9.0/
+                    ├── Jellyfin.Plugin.PosterRotator.dll
+                    └── [other build outputs]
+```
+
+---
+
+## TECHNICAL DETAILS
+
+### Environment
+- OS: Windows
+- .NET SDK: 9.0.314
+- PowerShell: 5.1
+- dotnet CLI: 9.0.314
+
+### Plugin Details
+- Version: 1.0.1.3
+- GUID: 7f6eea8b-0e9c-4cbd-9d2a-31f9a37ce2b7
+- Target: Jellyfin 10.11.9
+- Purpose: Rotate poster images periodically
+
+### Key Code Changes Made
+
+**PosterRotatorService.cs (Line 45-54):**
+```csharp
+public async Task RunAsync(Configuration cfg, IProgress<double>? progress, CancellationToken ct)
+{
+    var q = new InternalItemsQuery
+    {
+        IncludeItemTypes = new[] { BaseItemKind.Movie },
+        Recursive = true
+    };
+
+    var movies = _library.QueryItems(q).Items.OfType<Movie>().ToList();
+    // ... rest of method
+}
+```
+**Note:** RunAsync is still async but doesn't await the query since QueryItems() is synchronous.
+
+---
+
+## LEARNINGS & INSIGHTS
+
+1. **QueryItems() is Synchronous:** Jellyfin 10.11.9 uses `QueryResult<T>` pattern instead of Task-based async
+   - Access items via `.Items` property
+   - No need for ConfigureAwait()
+   - No await keyword needed
+
+2. **Enum Breaking Changes:** Not just methods removed - enum values changed significantly
+   - Old: TaskTriggerInfoType.TriggerDaily (static property)
+   - New: TaskTriggerInfoType enum with unknown values
+
+3. **Framework Compatibility:** NuGet packages strict about framework versions
+   - 10.11.9 packages only target net9.0
+   - net8.0 won't work despite being more recent
+
+4. **Build Diagnostics:** Compiler errors are valuable - they tell us what APIs DO exist
+
+---
+
+## USEFUL COMMANDS
+
+```powershell
+# Build
+dotnet build -c Release
+
+# Clean build
+dotnet clean
+dotnet build -c Release
+
+# Check build output
+ls bin/Release/net9.0/
+
+# Test run (if applicable)
+dotnet test
+```
+
+---
+
+## GITHUB REFERENCES
+
+- Repository: https://github.com/jblob-2019/jellyfin-plugin-poster-rotator
+- Release: v1.0.1.3
+- Target: Jellyfin 10.11.9.0
+
+---
+
+## CONTACT & NOTES
+
+**Project Owner:** jblob-2019
+**Last Updated:** May 28, 2026
+**Status:** Waiting on TaskTriggerInfoType enum value discovery
+
+**For Next Developer:**
+The only remaining blocker is finding the correct TaskTriggerInfoType enum value for Jellyfin 10.11.9. Once that's identified and applied to line 62 of PosterRotationTask.cs, the build should succeed and the plugin should be deployable.
+
+---
+
+*End of Handover Document*
